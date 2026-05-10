@@ -1,19 +1,29 @@
-#include "cam_init.h"
+#include "cam_config.h"
+
 #include "buffer_manager.h"
+#include "cam_init.h"
 #include "log/log.h"
+#include "motion_manager.h"
 
 #include <atomic>
-#include <csignal>
 #include <chrono>
+#include <csignal>
 #include <thread>
 
-// 프로그램이 계속 실행 중인지 나타내는 전역 상태 변수
-static std::atomic<bool> g_running(true);
+#if CAM_TEST_MODE == 1
+#include <iostream>
+#include <string>
+#include <sys/select.h>
+#include <unistd.h>
+#endif
 
-// 어떤 종료 신호를 받았는지 저장
+static std::atomic<bool> g_running(true);
 static volatile std::sig_atomic_t g_received_signal = 0;
 
-// 종료 신호를 받으면 main loop를 빠져나가기 위해 running 상태를 false로 바꾼다.
+#if CAM_TEST_MODE == 1
+static std::atomic<bool> g_test_motion_requested(false);
+#endif
+
 static void signal_handler(int signal)
 {
     if (signal == SIGINT || signal == SIGTERM) {
@@ -22,65 +32,121 @@ static void signal_handler(int signal)
     }
 }
 
-// Ctrl+C 또는 종료 요청을 처리하기 위한 signal handler를 등록한다.
 static void register_signal_handlers()
 {
-    // interrupt signal
-    // 터미널 실행 중 Ctrl + C 입력 시 발생
     std::signal(SIGINT, signal_handler);
-
-    // termination signal
-    // kill <PID> 또는 systemd stop 등으로 발생
     std::signal(SIGTERM, signal_handler);
 }
 
-// homecam 서비스 실행에 필요한 초기화를 수행한다.
 static bool init_homecam_service()
 {
-    // homecam 실행에 필요한 디렉터리를 준비한다.
     if (!init_homecam()) {
         log_write("cam", LogLevel::ERROR, "homecam initialization failed");
         return false;
     }
 
-    log_write("cam", LogLevel::INFO, "homecam initialization success");
-
-    // buffer manager를 초기화한다.
     if (!init_buffer_manager()) {
         log_write("cam", LogLevel::ERROR, "buffer manager initialization failed");
         return false;
     }
 
-    log_write("cam", LogLevel::INFO, "buffer manager initialization success");
+    log_write("cam", LogLevel::INFO, "homecam initialization success");
 
     return true;
 }
 
-// 종료 신호가 들어오면 짧은 주기로 확인하면서 대기한다.
-static void sleep_with_stop_check()
+#if CAM_TEST_MODE == 1
+
+static bool is_stdin_ready()
 {
-    for (int i = 0; i < 50 && g_running; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(STDIN_FILENO, &read_fds);
+
+    timeval timeout{};
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 100000;
+
+    const int result = select(STDIN_FILENO + 1, &read_fds, nullptr, nullptr, &timeout);
+
+    return result > 0 && FD_ISSET(STDIN_FILENO, &read_fds);
+}
+
+static void input_thread_loop()
+{
+    log_write("cam", LogLevel::INFO, "test command ready: m=motion, q=quit");
+
+    while (g_running) {
+        if (!is_stdin_ready()) {
+            continue;
+        }
+
+        std::string command;
+
+        if (!std::getline(std::cin, command)) {
+            log_write("cam", LogLevel::WARN, "test command input closed");
+            return;
+        }
+
+        if (command == "m") {
+            g_test_motion_requested = true;
+        } else if (command == "q") {
+            g_running = false;
+        } else if (!command.empty()) {
+            log_write("cam", LogLevel::WARN, "unknown test command: " + command);
+        }
     }
 }
 
-// homecam 서비스의 실제 실행 loop를 수행한다.
+#endif
+
+static void sleep_main_loop()
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(CAM_MAIN_LOOP_SLEEP_MS));
+}
+
 static void run_homecam_service()
 {
     log_write("cam", LogLevel::INFO, "homecam main loop start");
 
-    while (g_running) {
-        log_write("cam", LogLevel::INFO, "homecam alive");
+#if CAM_TEST_MODE == 1
+    std::thread input_thread(input_thread_loop);
+#endif
 
-        if (!rotate_buffer_file()) {
-            log_write("cam", LogLevel::ERROR, "buffer rotate failed");
+    while (g_running) {
+#if CAM_TEST_MODE == 1
+        if (g_test_motion_requested.exchange(false)) {
+            if (!notify_motion_detected()) {
+                log_write("cam", LogLevel::ERROR, "failed to notify motion detected");
+            }
+        }
+#endif
+
+        BufferUpdateResult buffer_result{};
+
+        if (!update_buffer_manager(&buffer_result)) {
+            log_write("cam", LogLevel::ERROR, "buffer manager update failed");
         }
 
-        sleep_with_stop_check();
+        if (!update_motion_manager(buffer_result)) {
+            log_write("cam", LogLevel::ERROR, "motion manager update failed");
+        }
+
+        // motion_manager가 완료 segment를 복사한 뒤 오래된 buffer를 정리한다.
+        if (!cleanup_buffer_segments()) {
+            log_write("cam", LogLevel::ERROR, "buffer cleanup failed");
+        }
+
+        sleep_main_loop();
     }
+
+#if CAM_TEST_MODE == 1
+    if (input_thread.joinable()) {
+        input_thread.join();
+    }
+#endif
 }
 
-// 종료 요청 종류에 따라 종료 로그를 출력한다.
 static void log_shutdown_reason()
 {
     if (g_received_signal == SIGINT) {
@@ -92,20 +158,16 @@ static void log_shutdown_reason()
 
 int main()
 {
-    // Ctrl+C 또는 종료 요청을 처리하기 위한 signal handler를 등록한다.
     register_signal_handlers();
 
     log_write("cam", LogLevel::INFO, "homecam start");
 
-    // homecam 서비스 실행에 필요한 초기화를 수행한다.
     if (!init_homecam_service()) {
         return 1;
     }
 
-    // 실제 동작 loop
     run_homecam_service();
 
-    // 종료 요청 종류에 따라 종료 로그를 출력한다.
     log_shutdown_reason();
 
     log_write("cam", LogLevel::INFO, "homecam exit");

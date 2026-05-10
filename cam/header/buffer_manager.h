@@ -1,12 +1,24 @@
 #ifndef BUFFER_MANAGER_H
 #define BUFFER_MANAGER_H
 
-// buffer manager를 초기화한다.
-// 테스트용 current buffer 파일을 준비한다.
+#include <filesystem>
+#include <vector>
+
+struct BufferUpdateResult {
+    bool segment_completed;
+    std::filesystem::path completed_segment;
+};
+
 bool init_buffer_manager();
 
-// current buffer를 prev buffer로 교체하고,
-// 새로운 current buffer 파일을 생성한다.
-bool rotate_buffer_file();
+bool update_buffer_manager(BufferUpdateResult* result);
+
+bool force_finalize_current_segment(BufferUpdateResult* result);
+
+std::vector<std::filesystem::path> get_buffer_segments();
+
+// buffer에 남은 오래된 segment를 정리한다.
+// motion_manager가 완료 segment를 처리한 뒤 호출해야 한다.
+bool cleanup_buffer_segments();
 
 #endif

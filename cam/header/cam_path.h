@@ -19,10 +19,8 @@ const fs::path RECORDINGS_PENDING_DIR = RECORDINGS_DIR / "pending";
 const fs::path RECORDINGS_SYNCED_DIR = RECORDINGS_DIR / "synced";
 const fs::path RECORDINGS_FAILED_DIR = RECORDINGS_DIR / "failed";
 
-// buffer 파일
-const fs::path PREV_BUFFER_FILE = BUFFER_DIR / "prev.txt";
-const fs::path CURRENT_BUFFER_FILE = BUFFER_DIR / "current.txt";
-const fs::path CURRENT_BUFFER_TMP_FILE = BUFFER_DIR / "current.tmp";
+// 현재 작성 중인 segment 파일
+const fs::path CURRENT_SEGMENT_TMP_FILE = BUFFER_DIR / "current_segment.tmp";
 
 }
 
