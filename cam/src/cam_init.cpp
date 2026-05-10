@@ -1,7 +1,7 @@
 #include "cam_init.h"
 #include "log/log.h"
+#include "cam_path.h"
 
-#include <iostream>
 #include <filesystem>
 #include <vector>
 
@@ -52,12 +52,12 @@ bool init_homecam()
 {
     // homecam 서비스 실행에 필요한 디렉터리 목록
     const std::vector<fs::path> required_dirs = {
-        "cam/buffer",
-        "cam/config",
-        "cam/recordings",
-        "cam/recordings/pending",
-        "cam/recordings/synced",
-        "cam/recordings/failed"
+        cam_path::BUFFER_DIR,
+        cam_path::CONFIG_DIR,
+        cam_path::RECORDINGS_DIR,
+        cam_path::RECORDINGS_PENDING_DIR,
+        cam_path::RECORDINGS_SYNCED_DIR,
+        cam_path::RECORDINGS_FAILED_DIR
     };
 
     bool success = true;
